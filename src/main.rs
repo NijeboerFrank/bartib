@@ -1,8 +1,13 @@
+use std::borrow::Borrow;
+
 use anyhow::{bail, Context, Result};
+use bartib::view::status::StatusReport;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveTime};
-use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
+use clap::{crate_version, App, AppSettings, Arg, ArgMatches, SubCommand};
 
 use bartib::data::getter::ActivityFilter;
+use bartib::data::processor;
+
 #[cfg(windows)]
 use nu_ansi_term::enable_ansi_support;
 
@@ -75,6 +80,12 @@ fn main() -> Result<()> {
         ])
         .takes_value(false);
 
+    let arg_group = Arg::with_name("round")
+        .long("round")
+        .help("rounds the start and end time to the nearest duration. Durations can be in minutes or hours. E.g. 15m or 4h")
+        .required(false)
+        .takes_value(true);
+
     let arg_description = Arg::with_name("description")
         .short("d")
         .long("description")
@@ -90,9 +101,11 @@ fn main() -> Result<()> {
         .takes_value(true);
 
     let matches = App::new("bartib")
-        .version("1.0.0")
+        .version(crate_version!())
         .author("Nikolas Schmidt-Voigt <nikolas.schmidt-voigt@posteo.de>")
         .about("A simple timetracker")
+        .after_help("To get help for a specific subcommand, run `bartib [SUBCOMMAND] --help`.
+To get started, view the `start` help with `bartib start --help`")
         .setting(AppSettings::SubcommandRequiredElseHelp)
         .setting(AppSettings::VersionlessSubcommands)
         .arg(
@@ -153,6 +166,7 @@ fn main() -> Result<()> {
                 .arg(&arg_yesterday)
                 .arg(&arg_current_week)
                 .arg(&arg_last_week)
+                .arg(&arg_group)
                 .arg(
                     Arg::with_name("project")
                         .short("p")
@@ -187,6 +201,7 @@ fn main() -> Result<()> {
                 .arg(&arg_yesterday)
                 .arg(&arg_current_week)
                 .arg(&arg_last_week)
+                .arg(&arg_group)
                 .arg(
                     Arg::with_name("project")
                         .short("p")
@@ -221,6 +236,14 @@ fn main() -> Result<()> {
                         .help("prints currently running projects only")
                         .takes_value(false)
                         .required(false),
+                )
+                .arg(
+                    Arg::with_name("no-quotes")
+                        .short("n")
+                        .long("no-quotes")
+                        .help("prints projects without quotes")
+                        .takes_value(false)
+                        .required(false),
                 ),
         )
         .subcommand(
@@ -237,6 +260,29 @@ fn main() -> Result<()> {
         )
         .subcommand(SubCommand::with_name("check").about("checks file and reports parsing errors"))
         .subcommand(SubCommand::with_name("sanity").about("checks sanity of bartib log"))
+        .subcommand(SubCommand::with_name("search").about("search for existing descriptions and projects")
+                .arg(
+                    Arg::with_name("search_term")
+                        .value_name("SEARCH_TERM")
+                        .help("the search term")
+                        .required(true)
+                        .takes_value(true)
+                        .default_value("''"),
+                ),
+        )
+        .subcommand(
+            SubCommand::with_name("status")
+                .about("shows current status and time reports for today, current week, and current month")
+                .arg(
+                    Arg::with_name("project")
+                        .short("p")
+                        .long("project")
+                        .value_name("PROJECT")
+                        .help("show status for this project only")
+                        .takes_value(true)
+                        .required(false),
+                ),
+        )
         .get_matches();
 
     let file_name = matches.value_of("file")
@@ -299,16 +345,20 @@ fn run_subcommand(matches: &ArgMatches, file_name: &str) -> Result<()> {
         ("current", Some(_)) => bartib::controller::list::list_running(file_name),
         ("list", Some(sub_m)) => {
             let filter = create_filter_for_arguments(sub_m);
+            let processors = create_processors_for_arguments(sub_m);
             let do_group_activities = !sub_m.is_present("no_grouping") && filter.date.is_none();
-            bartib::controller::list::list(file_name, filter, do_group_activities)
+            bartib::controller::list::list(file_name, filter, do_group_activities, processors)
         }
         ("report", Some(sub_m)) => {
             let filter = create_filter_for_arguments(sub_m);
-            bartib::controller::report::show_report(file_name, filter)
+            let processors = create_processors_for_arguments(sub_m);
+            bartib::controller::report::show_report(file_name, filter, processors)
         }
-        ("projects", Some(sub_m)) => {
-            bartib::controller::list::list_projects(file_name, sub_m.is_present("current"))
-        }
+        ("projects", Some(sub_m)) => bartib::controller::list::list_projects(
+            file_name,
+            sub_m.is_present("current"),
+            sub_m.is_present("no-quotes"),
+        ),
         ("last", Some(sub_m)) => {
             let number = get_number_argument_or_ignore(sub_m.value_of("number"), "-n/--number")
                 .unwrap_or(10);
@@ -320,8 +370,33 @@ fn run_subcommand(matches: &ArgMatches, file_name: &str) -> Result<()> {
         }
         ("check", Some(_)) => bartib::controller::list::check(file_name),
         ("sanity", Some(_)) => bartib::controller::list::sanity_check(file_name),
+        ("search", Some(sub_m)) => {
+            let search_term = sub_m.value_of("search_term");
+            bartib::controller::list::search(file_name, search_term)
+        }
+        ("status", Some(sub_m)) => {
+            let filter = create_filter_for_arguments(sub_m);
+            let processors = create_processors_for_arguments(sub_m);
+            let writer = create_status_writer(sub_m);
+            bartib::controller::status::show_status(file_name, filter, processors, writer.borrow())
+        }
         _ => bail!("Unknown command"),
     }
+}
+
+fn create_processors_for_arguments(sub_m: &ArgMatches) -> processor::ProcessorList {
+    let mut processors: Vec<Box<dyn processor::ActivityProcessor>> = Vec::new();
+
+    if let Some(round) = get_duration_argument_or_ignore(sub_m.value_of("round"), "--round") {
+        processors.push(Box::new(processor::RoundProcessor { round }));
+    }
+
+    processors
+}
+
+fn create_status_writer(_sub_m: &ArgMatches) -> Box<dyn processor::StatusReportWriter> {
+    let result = StatusReport {};
+    Box::new(result)
 }
 
 fn create_filter_for_arguments<'a>(sub_m: &'a ArgMatches) -> ActivityFilter<'a> {
@@ -347,9 +422,9 @@ fn create_filter_for_arguments<'a>(sub_m: &'a ArgMatches) -> ActivityFilter<'a> 
 
     if sub_m.is_present("current_week") {
         filter.from_date =
-            Some(today - Duration::days(today.weekday().num_days_from_monday() as i64));
+            Some(today - Duration::days(i64::from(today.weekday().num_days_from_monday())));
         filter.to_date = Some(
-            today - Duration::days(today.weekday().num_days_from_monday() as i64)
+            today - Duration::days(i64::from(today.weekday().num_days_from_monday()))
                 + Duration::days(6),
         );
     }
@@ -357,12 +432,12 @@ fn create_filter_for_arguments<'a>(sub_m: &'a ArgMatches) -> ActivityFilter<'a> 
     if sub_m.is_present("last_week") {
         filter.from_date = Some(
             today
-                - Duration::days(today.weekday().num_days_from_monday() as i64)
+                - Duration::days(i64::from(today.weekday().num_days_from_monday()))
                 - Duration::weeks(1),
         );
         filter.to_date = Some(
             today
-                - Duration::days(today.weekday().num_days_from_monday() as i64)
+                - Duration::days(i64::from(today.weekday().num_days_from_monday()))
                 - Duration::weeks(1)
                 + Duration::days(6),
         )
@@ -382,8 +457,7 @@ fn get_number_argument_or_ignore(
             Some(number)
         } else {
             println!(
-                "Can not parse \"{}\" as number. Argument for {} is ignored",
-                number_string, argument_name
+                "Can not parse \"{number_string}\" as number. Argument for {argument_name} is ignored"
             );
             None
         }
@@ -403,8 +477,7 @@ fn get_date_argument_or_ignore(
             Ok(date) => Some(date),
             Err(parsing_error) => {
                 println!(
-                    "Can not parse \"{}\" as date. Argument for {} is ignored ({})",
-                    date_string, argument_name, parsing_error
+                    "Can not parse \"{date_string}\" as date. Argument for {argument_name} is ignored ({parsing_error})"
                 );
                 None
             }
@@ -425,11 +498,38 @@ fn get_time_argument_or_ignore(
             Ok(date) => Some(date),
             Err(parsing_error) => {
                 println!(
-                    "Can not parse \"{}\" as time. Argument for {} is ignored ({})",
-                    time_string, argument_name, parsing_error
+                    "Can not parse \"{time_string}\" as time. Argument for {argument_name} is ignored ({parsing_error})"
                 );
                 None
             }
+        }
+    } else {
+        None
+    }
+}
+
+fn get_duration_argument_or_ignore(
+    duration_argument: Option<&str>,
+    argument_name: &str,
+) -> Option<chrono::Duration> {
+    if let Some(duration_string) = duration_argument {
+        // extract last character, leave the rest as number
+        let (number_string, duration_unit) = duration_string.split_at(duration_string.len() - 1);
+
+        let number: Option<i64> = number_string.parse().ok();
+
+        match number {
+            Some(number) => match duration_unit {
+                "m" => Some(chrono::Duration::minutes(number)),
+                "h" => Some(chrono::Duration::hours(number)),
+                _ => {
+                    println!(
+                            "Can not parse \"{duration_string}\" as duration. Argument for {argument_name} is ignored"
+                        );
+                    None
+                }
+            },
+            None => None,
         }
     } else {
         None

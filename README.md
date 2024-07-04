@@ -174,6 +174,10 @@ apk add bartib
 
 (Currently bartib is only available in the [testing repository](https://pkgs.alpinelinux.org/packages?name=bartib))
 
+#### General Packaging Status
+
+[![Packaging status](https://repology.org/badge/vertical-allrepos/bartib.svg)](https://repology.org/project/bartib/versions)
+
 ### How to build Bartib
 
 Bartib is written in rust. You may build it yourself with the help of cargo. Just clone this repository and execute the `cargo build` command in its main directory:
@@ -264,6 +268,8 @@ bartib report --last_week    # create a report for the last week
 bartib report --date 2021-09-03    # create a report for a given day
 bartib report --from 2021-09-01 --to 2021-09-05    # create a report for a given time range
 bartib report --project "The most exciting project"    # create a report for a given project
+bartib report --project "Maint?nance *"    # use '?' and '*' as wildcards in project names
+bartib report --round 15m # rounds the start and end time to the nearest duration. Durations can be in minutes or hours. E.g. 15m or 4h
 
 bartib list    # list all activities grouped by day
 bartib list --no_grouping    # list all activities but do not group them by day
@@ -275,6 +281,10 @@ bartib list --last_week    # list activities of the last week
 bartib list --date 2021-09-03    # list activities on a given day
 bartib list --from 2021-09-01 --to 2021-09-05    # list activities in a given time range
 bartib list --project "The most exciting project"    # list activities for a given project
+bartib list --round 15m # rounds the start and end time to the nearest duration. Durations can be in minutes or hours. E.g. 15m or 4h
+
+bartib search "exiting"   # search all descriptions and projects for a specific term
+bartib search "e*t?ng"   # use '?' and '*' as wildcards
 ```
 
 ### Edit activities

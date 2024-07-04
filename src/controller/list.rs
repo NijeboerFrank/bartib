@@ -1,11 +1,13 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
+use wildmatch::WildMatch;
 
 use crate::conf;
 use crate::data::activity;
 use crate::data::activity::Activity;
 use crate::data::bartib_file;
 use crate::data::getter;
+use crate::data::processor;
 use crate::view::list;
 
 // lists all currently running activities.
@@ -25,11 +27,16 @@ pub fn list(
     file_name: &str,
     filter: getter::ActivityFilter,
     do_group_activities: bool,
+    processors: processor::ProcessorList,
 ) -> Result<()> {
     let file_content = bartib_file::get_file_content(file_name)?;
-    let activities = getter::get_activities(&file_content);
+    let activities = getter::get_activities(&file_content).collect();
+    let processed_activities_bind: Vec<activity::Activity> =
+        processor::process_activities(activities, processors);
+    let processed_activities: Vec<&activity::Activity> = processed_activities_bind.iter().collect();
+
     let mut filtered_activities: Vec<&activity::Activity> =
-        getter::filter_activities(activities, &filter).collect();
+        getter::filter_activities(processed_activities, &filter);
 
     filtered_activities.sort_by_key(|activity| activity.start);
 
@@ -115,10 +122,10 @@ fn print_activity_with_line(activity: &Activity, line_number: usize) {
         "{} (Started: {}, Ended: {}, Line: {})\n",
         activity.description,
         activity.start.format(conf::FORMAT_DATETIME),
-        activity
-            .end
-            .map(|end| end.format(conf::FORMAT_DATETIME).to_string())
-            .unwrap_or_else(|| String::from("--")),
+        activity.end.map_or_else(
+            || String::from("--"),
+            |end| end.format(conf::FORMAT_DATETIME).to_string()
+        ),
         line_number
     )
 }
@@ -137,7 +144,7 @@ pub fn check(file_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("Found {} line(s) with parsing errors", number_of_errors);
+    println!("Found {number_of_errors} line(s) with parsing errors");
 
     file_content
         .iter()
@@ -157,7 +164,7 @@ pub fn check(file_name: &str) -> Result<()> {
 }
 
 // lists all projects
-pub fn list_projects(file_name: &str, current: bool) -> Result<()> {
+pub fn list_projects(file_name: &str, current: bool, no_quotes: bool) -> Result<()> {
     let file_content = bartib_file::get_file_content(file_name)?;
 
     let mut all_projects: Vec<&String> = getter::get_activities(&file_content)
@@ -169,7 +176,11 @@ pub fn list_projects(file_name: &str, current: bool) -> Result<()> {
     all_projects.dedup();
 
     for project in all_projects {
-        println!("\"{}\"", project);
+        if no_quotes {
+            println!("{project}");
+        } else {
+            println!("\"{project}\"");
+        }
     }
 
     Ok(())
@@ -184,6 +195,32 @@ pub fn list_last_activities(file_name: &str, number: usize) -> Result<()> {
     let first_element = descriptions_and_projects.len().saturating_sub(number);
 
     list::list_descriptions_and_projects(&descriptions_and_projects[first_element..]);
+
+    Ok(())
+}
+
+// searches for the term in descriptions and projects
+pub fn search(file_name: &str, search_term: Option<&str>) -> Result<()> {
+    let search_term = search_term
+        .map(|term| format!("*{}*", term.to_lowercase()))
+        .unwrap_or("".to_string());
+    let file_content = bartib_file::get_file_content(file_name)?;
+
+    let descriptions_and_projects: Vec<(&String, &String)> =
+        getter::get_descriptions_and_projects(&file_content);
+    let search_term_wildmatch = WildMatch::new(&search_term);
+    let matches: Vec<(usize, &(&String, &String))> = descriptions_and_projects
+        .iter()
+        .rev()
+        .enumerate()
+        .rev()
+        .filter(|(_index, (desc, proj))| {
+            search_term_wildmatch.matches(&desc.to_lowercase())
+                || search_term_wildmatch.matches(&proj.to_lowercase())
+        })
+        .collect();
+
+    list::list_descriptions_and_projects_with_index(&matches, "No matching activities found");
 
     Ok(())
 }

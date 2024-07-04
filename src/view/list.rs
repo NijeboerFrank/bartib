@@ -21,7 +21,7 @@ pub fn list_activities(activities: &[&activity::Activity], with_start_dates: boo
         .map(|t| get_activity_table_row(t, with_start_dates))
         .for_each(|row| activity_table.add_row(row));
 
-    println!("\n{}", activity_table);
+    println!("\n{activity_table}");
 }
 
 // list activities grouped by the dates of their start time
@@ -36,11 +36,11 @@ pub fn list_activities_grouped_by_date(activities: &[&activity::Activity]) {
     group_activities_by_date(activities)
         .iter()
         .map(|(date, activity_list)| {
-            create_activities_group(&format!("{}", date), activity_list.as_slice())
+            create_activities_group(&format!("{date}"), activity_list.as_slice())
         })
         .for_each(|g| activity_table.add_group(g));
 
-    println!("\n{}", activity_table);
+    println!("\n{activity_table}");
 }
 
 fn create_activity_table() -> table::Table {
@@ -112,44 +112,56 @@ pub fn list_running_activities(activities: &[&activity::Activity]) {
             })
             .for_each(|row| activity_table.add_row(row));
 
-        println!("\n{}", activity_table);
+        println!("\n{activity_table}");
     }
 }
 
-// display a list of projects and descriptions with index number
+// display a list of projects and descriptions with generated index number
 pub fn list_descriptions_and_projects(descriptions_and_projects: &[(&String, &String)]) {
+    list_descriptions_and_projects_with_index(
+        &descriptions_and_projects
+            .iter()
+            .rev()
+            .enumerate()
+            .rev()
+            .collect::<Vec<_>>(),
+        "No activities have been tracked yet",
+    )
+}
+
+// display a list of projects ands descriptions with custom indexes
+pub fn list_descriptions_and_projects_with_index(
+    descriptions_and_projects: &[(usize, &(&String, &String))],
+    zero_length_error: &str,
+) {
     if descriptions_and_projects.is_empty() {
-        println!("No activities have been tracked yet");
-    } else {
-        let mut descriptions_and_projects_table = table::Table::new(vec![
-            table::Column {
-                label: " # ".to_string(),
-                wrap: table::Wrap::NoWrap,
-            },
-            table::Column {
-                label: "Description".to_string(),
-                wrap: table::Wrap::Wrap,
-            },
-            table::Column {
-                label: "Project".to_string(),
-                wrap: table::Wrap::Wrap,
-            },
-        ]);
-
-        let mut i = descriptions_and_projects.len();
-
-        for (description, project) in descriptions_and_projects {
-            i = i.saturating_sub(1);
-
-            descriptions_and_projects_table.add_row(table::Row::new(vec![
-                format!("[{}]", i),
-                description.to_string(),
-                project.to_string(),
-            ]));
-        }
-
-        println!("\n{}", descriptions_and_projects_table);
+        println!("{zero_length_error}");
+        return;
     }
+    let mut descriptions_and_projects_table = table::Table::new(vec![
+        table::Column {
+            label: " # ".to_string(),
+            wrap: table::Wrap::NoWrap,
+        },
+        table::Column {
+            label: "Description".to_string(),
+            wrap: table::Wrap::Wrap,
+        },
+        table::Column {
+            label: "Project".to_string(),
+            wrap: table::Wrap::Wrap,
+        },
+    ]);
+
+    for (index, (description, project)) in descriptions_and_projects {
+        descriptions_and_projects_table.add_row(table::Row::new(vec![
+            format!("[{}]", index),
+            (*description).to_string(),
+            (*project).to_string(),
+        ]));
+    }
+
+    println!("\n{descriptions_and_projects_table}");
 }
 
 // create a row for a activity
@@ -200,7 +212,7 @@ fn group_activities_by_date<'a>(
 ) -> BTreeMap<NaiveDate, Vec<&'a activity::Activity>> {
     let mut activities_by_date = BTreeMap::new();
 
-    for &activity in activities.iter() {
+    for &activity in activities {
         activities_by_date
             .entry(activity.start.date())
             .or_insert_with(Vec::new)
